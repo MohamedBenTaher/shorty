@@ -6,7 +6,6 @@ import com.example.shorty.repository.UrlRepository;
 import com.example.shorty.utils.Base64Encoder;
 import org.springframework.stereotype.Service;
 
-import java.time.LocalDateTime;
 import java.util.Optional;
 
 @Service
@@ -34,11 +33,7 @@ public class ShorteningService {
         long id = idGenerator.nextId();
         String shortCode = Base64Encoder.encode(id);
 
-        UrlEntity entity = new UrlEntity();
-        entity.setId(id);
-        entity.setShortCode(shortCode);
-        entity.setLongUrl(finalLongUrl);
-        entity.setCreatedAt(LocalDateTime.now());
+        UrlEntity entity = UrlEntity.newEntity(id, shortCode, finalLongUrl);
         urlRepository.save(entity);
 
         return shortCode;
