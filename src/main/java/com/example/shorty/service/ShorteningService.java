@@ -1,11 +1,11 @@
 package com.example.shorty.service;
 
+import com.example.shorty.id.SnowflakeIdGenerator;
 import com.example.shorty.model.UrlEntity;
 import com.example.shorty.repository.UrlRepository;
 import com.example.shorty.utils.Base64Encoder;
 import org.springframework.stereotype.Service;
 
-import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
@@ -13,9 +13,11 @@ import java.util.Optional;
 public class ShorteningService {
 
     private final UrlRepository urlRepository;
+    private final SnowflakeIdGenerator idGenerator;
 
-    public ShorteningService(UrlRepository urlRepository) {
+    public ShorteningService(UrlRepository urlRepository, SnowflakeIdGenerator idGenerator) {
         this.urlRepository = urlRepository;
+        this.idGenerator = idGenerator;
     }
 
     public String shorten(String longUrl) {
@@ -29,10 +31,11 @@ public class ShorteningService {
             return existing.get().getShortCode();
         }
 
-        SecureRandom random = new SecureRandom();
-        String shortCode = Base64Encoder.encode(random.nextLong() & Long.MAX_VALUE);
+        long id = idGenerator.nextId();
+        String shortCode = Base64Encoder.encode(id);
 
         UrlEntity entity = new UrlEntity();
+        entity.setId(id);
         entity.setShortCode(shortCode);
         entity.setLongUrl(finalLongUrl);
         entity.setCreatedAt(LocalDateTime.now());

@@ -1,5 +1,6 @@
 package com.example.shorty.service;
 
+import com.example.shorty.id.SnowflakeIdGenerator;
 import com.example.shorty.model.UrlEntity;
 import com.example.shorty.repository.UrlRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,16 +22,20 @@ class ShorteningServiceTest {
     @Mock
     private UrlRepository urlRepository;
 
+    @Mock
+    private SnowflakeIdGenerator idGenerator;
+
     private ShorteningService service;
 
     @BeforeEach
     void setUp() {
-        service = new ShorteningService(urlRepository);
+        service = new ShorteningService(urlRepository, idGenerator);
     }
 
     @Test
     void shortenShouldPrependHttpsWhenMissing() {
         when(urlRepository.findByLongUrl("https://example.com")).thenReturn(Optional.empty());
+        when(idGenerator.nextId()).thenReturn(123L);
         when(urlRepository.save(any(UrlEntity.class))).thenAnswer(inv -> inv.getArgument(0));
 
         String code = service.shorten("example.com");
@@ -38,12 +43,14 @@ class ShorteningServiceTest {
         ArgumentCaptor<UrlEntity> captor = ArgumentCaptor.forClass(UrlEntity.class);
         verify(urlRepository).save(captor.capture());
         assertThat(captor.getValue().getLongUrl()).isEqualTo("https://example.com");
+        assertThat(captor.getValue().getId()).isEqualTo(123L);
         assertThat(code).isNotBlank();
     }
 
     @Test
     void shortenShouldNotAlterUrlWithHttpPrefix() {
         when(urlRepository.findByLongUrl("http://example.com")).thenReturn(Optional.empty());
+        when(idGenerator.nextId()).thenReturn(456L);
         when(urlRepository.save(any(UrlEntity.class))).thenAnswer(inv -> inv.getArgument(0));
 
         service.shorten("http://example.com");
@@ -64,12 +71,14 @@ class ShorteningServiceTest {
         String code = service.shorten("https://github.com");
 
         assertThat(code).isEqualTo("abc123");
+        verify(idGenerator, never()).nextId();
         verify(urlRepository, never()).save(any());
     }
 
     @Test
     void shortenShouldSaveNewEntityWhenUrlNotPresent() {
         when(urlRepository.findByLongUrl("https://new.com")).thenReturn(Optional.empty());
+        when(idGenerator.nextId()).thenReturn(789L);
         when(urlRepository.save(any(UrlEntity.class))).thenAnswer(inv -> inv.getArgument(0));
 
         String code = service.shorten("https://new.com");
@@ -79,8 +88,20 @@ class ShorteningServiceTest {
     }
 
     @Test
+    void shortenShouldEncodeSnowflakeIdToShortCode() {
+        when(urlRepository.findByLongUrl("https://test.com")).thenReturn(Optional.empty());
+        when(idGenerator.nextId()).thenReturn(10L);
+        when(urlRepository.save(any(UrlEntity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        String code = service.shorten("https://test.com");
+
+        assertThat(code).isEqualTo("A");
+    }
+
+    @Test
     void shortenShouldGenerateDifferentCodesForDifferentUrls() {
         when(urlRepository.findByLongUrl(anyString())).thenReturn(Optional.empty());
+        when(idGenerator.nextId()).thenReturn(1L, 2L);
         when(urlRepository.save(any(UrlEntity.class))).thenAnswer(inv -> inv.getArgument(0));
 
         String code1 = service.shorten("https://one.com");
@@ -88,6 +109,7 @@ class ShorteningServiceTest {
 
         assertThat(code1).isNotBlank();
         assertThat(code2).isNotBlank();
+        assertThat(code1).isNotEqualTo(code2);
     }
 
     @Test
