@@ -31,6 +31,7 @@ class ShorteningServiceTest {
     @Test
     void shortenShouldPrependHttpsWhenMissing() {
         when(urlRepository.findByLongUrl("https://example.com")).thenReturn(Optional.empty());
+        when(urlRepository.nextId()).thenReturn(1L);
         when(urlRepository.save(any(UrlEntity.class))).thenAnswer(inv -> inv.getArgument(0));
 
         String code = service.shorten("example.com");
@@ -44,6 +45,7 @@ class ShorteningServiceTest {
     @Test
     void shortenShouldNotAlterUrlWithHttpPrefix() {
         when(urlRepository.findByLongUrl("http://example.com")).thenReturn(Optional.empty());
+        when(urlRepository.nextId()).thenReturn(1L);
         when(urlRepository.save(any(UrlEntity.class))).thenAnswer(inv -> inv.getArgument(0));
 
         service.shorten("http://example.com");
@@ -64,12 +66,14 @@ class ShorteningServiceTest {
         String code = service.shorten("https://github.com");
 
         assertThat(code).isEqualTo("abc123");
+        verify(urlRepository, never()).nextId();
         verify(urlRepository, never()).save(any());
     }
 
     @Test
     void shortenShouldSaveNewEntityWhenUrlNotPresent() {
         when(urlRepository.findByLongUrl("https://new.com")).thenReturn(Optional.empty());
+        when(urlRepository.nextId()).thenReturn(5L);
         when(urlRepository.save(any(UrlEntity.class))).thenAnswer(inv -> inv.getArgument(0));
 
         String code = service.shorten("https://new.com");
@@ -79,8 +83,20 @@ class ShorteningServiceTest {
     }
 
     @Test
+    void shortenShouldEncodeSequenceIdToShortCode() {
+        when(urlRepository.findByLongUrl("https://one.com")).thenReturn(Optional.empty());
+        when(urlRepository.nextId()).thenReturn(10L);
+        when(urlRepository.save(any(UrlEntity.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        String code = service.shorten("https://one.com");
+
+        assertThat(code).isEqualTo("A");
+    }
+
+    @Test
     void shortenShouldGenerateDifferentCodesForDifferentUrls() {
         when(urlRepository.findByLongUrl(anyString())).thenReturn(Optional.empty());
+        when(urlRepository.nextId()).thenReturn(1L, 2L);
         when(urlRepository.save(any(UrlEntity.class))).thenAnswer(inv -> inv.getArgument(0));
 
         String code1 = service.shorten("https://one.com");
@@ -88,6 +104,7 @@ class ShorteningServiceTest {
 
         assertThat(code1).isNotBlank();
         assertThat(code2).isNotBlank();
+        assertThat(code1).isNotEqualTo(code2);
     }
 
     @Test
