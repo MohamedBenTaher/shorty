@@ -1,66 +1,39 @@
 package com.example.shorty.controller;
 
-import com.example.shorty.model.UrlEntity;
-import com.example.shorty.repository.UrlRepository;
-import com.example.shorty.utils.Base64Encoder;
-import jakarta.validation.constraints.NotBlank;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
+import com.example.shorty.dto.ShortenRequest;
+import com.example.shorty.dto.ShortenResponse;
+import com.example.shorty.service.ShorteningService;
+import jakarta.validation.Valid;
+import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
-
-import java.net.URI;
-import java.security.SecureRandom;
-import java.time.LocalDateTime;
-import java.util.Map;
-import java.util.Optional;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 @RestController
 public class UrlController {
 
-    private final UrlRepository urlRepository;
+    private final ShorteningService shorteningService;
 
-    public UrlController(UrlRepository urlRepository) {
-        this.urlRepository = urlRepository;
+    public UrlController(ShorteningService shorteningService) {
+        this.shorteningService = shorteningService;
     }
 
-    @PostMapping("/api/urls")
-    public ResponseEntity<Map<String, String>> shorten(@RequestBody Map<String, String> body) {
-        String longUrl = body.get("longUrl");
-        if (longUrl == null || longUrl.isBlank()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "URL is required"));
-        }
-
-        if (!longUrl.startsWith("http://") && !longUrl.startsWith("https://")) {
-            longUrl = "https://" + longUrl;
-        }
-
-        String finalLongUrl = longUrl;
-        Optional<UrlEntity> existing = urlRepository.findByLongUrl(finalLongUrl);
-        if (existing.isPresent()) {
-            return ResponseEntity.ok(Map.of("shortUrl", "http://localhost:8080/" + existing.get().getShortCode()));
-        }
-
-        SecureRandom random = new SecureRandom();
-        String shortCode = Base64Encoder.encode(random.nextLong() & Long.MAX_VALUE);
-
-        UrlEntity entity = new UrlEntity();
-        entity.setShortCode(shortCode);
-        entity.setLongUrl(finalLongUrl);
-        entity.setCreatedAt(LocalDateTime.now());
-        urlRepository.save(entity);
-
-        return ResponseEntity.ok(Map.of("shortUrl", "http://localhost:8080/s/" + shortCode));
+    @PostMapping("/api/shorten")
+    public ResponseEntity<ShortenResponse> shorten(@Valid @RequestBody ShortenRequest request) {
+        String shortCode = shorteningService.shorten(request.longUrl());
+        String shortUrl = ServletUriComponentsBuilder.fromCurrentContextPath()
+            .path("/s/{shortCode}")
+            .build(shortCode)
+            .toString();
+        return ResponseEntity.ok(new ShortenResponse(shortUrl, shortCode));
     }
 
     @GetMapping("/s/{shortCode}")
     public ResponseEntity<Void> redirect(@PathVariable String shortCode) {
-        Optional<UrlEntity> entity = urlRepository.findByShortCode(shortCode);
-        if (entity.isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
-        HttpHeaders headers = new HttpHeaders();
-        headers.setLocation(URI.create(entity.get().getLongUrl()));
-        return new ResponseEntity<>(headers, HttpStatus.FOUND);
+        String longUrl = shorteningService.resolve(shortCode)
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        return ResponseEntity.status(HttpStatus.FOUND)
+            .header(HttpHeaders.LOCATION, longUrl)
+            .build();
     }
 }
