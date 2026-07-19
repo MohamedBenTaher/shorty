@@ -1,6 +1,6 @@
 ---
 title: "Designing a Scalable URL Shortener: One Problem, Three Architectures"
-subtitle: "What a fintech startup taught me about identity, coordination, and the art of picking the right trade-off."
+subtitle: "What building a URL shortener from scratch taught me about identity, coordination, and the art of picking the right trade-off."
 date: "Jul 12, 2026"
 readTime: "14 min"
 views: 0
@@ -10,26 +10,26 @@ featured: true
 
 ## The Problem
 
-A fintech startup I worked with needed a link shortener for SMS campaigns, QR codes, and email signatures. Nothing exotic — until you look at what those use cases actually demand.
+A URL shortener is one of those classic system design problems that sounds trivial until you actually think about it. Shorten a link, redirect it, done. But the reasons short links exist in the first place push you toward some genuinely interesting constraints.
 
-SMS messages have a 160-character ceiling. Every character in a short link is one fewer character available for the message itself. QR codes with shorter URLs produce simpler patterns that scan faster on cheap Android phones. Email signatures should be clean, not dominated by a giant tracking link.
+Think about where short links get used. SMS caps you at 160 characters, so every character your link eats is one less for the actual message. Shorter URLs make simpler QR patterns, which scan noticeably faster on cheap phones. And nobody wants an email signature dominated by some giant tracking link.
 
-And then there are the hard constraints that come with any link that lives in the wild:
+Then there are the constraints that come with any link released into the wild:
 
-1. **Uniqueness, period.** A collision is not a "failed request." It's a link that already went out to a customer now pointing to the wrong destination. You don't get a second chance.
-2. **No single point of failure.** If one server or one region goes down, the system keeps shortening and redirecting links. Customers never notice.
-3. **Idempotency.** Shorten the same URL twice, get the same short code back. Otherwise you end up with five different codes for your homepage and your analytics are a mess.
-4. **Redirects in single-digit milliseconds.** This is the hot path. A redirect is a database lookup. If it's slow, you built it wrong.
+1. **Uniqueness, period.** A collision isn't a failed request you can retry. It's a link that already went out to customers and now points at the wrong thing. There's no fixing that after the fact.
+2. **No single point of failure.** If one server or one region goes down, the system keeps shortening and redirecting. Customers never notice.
+3. **Idempotency.** Shorten the same URL twice, you should get the same code back. Otherwise you end up with five different codes for your homepage and your analytics become garbage.
+4. **Redirects in single-digit milliseconds.** This is the hot path. A redirect is one database lookup. If that's slow, something went wrong somewhere.
 
-That's the puzzle: **globally unique, compact, collision-free IDs generated at scale without coordination.**
+So the real puzzle is this: globally unique, compact, collision-free IDs, generated at scale, without servers having to talk to each other.
 
 ---
 
 ## The Approach
 
-It would have been easy to pick one strategy and defend it. Instead, we framed this as an experiment: build the same application three times, swapping out only the ID generation engine. One codebase, three Git branches, three answers to the same question.
+The easy thing would have been to pick one strategy and argue for it. Instead, I turned it into an experiment: build the same app three times and only swap out the ID generation engine. One codebase, three Git branches, three answers to the same question.
 
-The shared infrastructure is deliberately boring. Spring Boot handles HTTP. PostgreSQL stores the data. A plain HTML page serves as the frontend — no framework, no build step, just a form and a fetch call. The database schema is a single table with two indexes, one for redirect lookups and one for deduplication checks.
+Everything around the ID generator is intentionally dull. Spring Boot for HTTP, PostgreSQL for storage, and a plain HTML page for the frontend. No framework, no build step, just a form and a fetch call. The schema is one table with two indexes: one for redirect lookups, one for dedup checks.
 
 ```mermaid
 graph LR
@@ -41,57 +41,54 @@ graph LR
     urls table")]
 
     API -.- SVC["ID Generation Engine
-    ⬅ the only thing that varies"]
-
-    style SVC fill:#f26a3d,color:#fff
-    style DB fill:#1557d6,color:#fff
+    (the only thing that varies)"]
 ```
 
-The only variable — the entire purpose of this article — is the service layer highlighted in orange. How do you assign an identity? Three answers follow.
+The only thing that changes, and the whole point of this article, is the ID generation engine. How does a URL get its identity? Here are three answers.
 
 ---
 
 ## Approach 1 — Just Pick a Random Number
 
-The simplest answer is also the boldest: **don't coordinate at all.** Generate a random number, encode it into a compact string, and move on with your life.
+The simplest answer is also kind of the boldest: don't coordinate at all. Generate a random number, encode it, and move on.
 
-Here's what actually happens when a URL comes in. First, check if we've seen it before — if so, return the existing code. No point generating a new one for the same destination. If it's new, produce a cryptographically random 64-bit number, encode it to Base62, and save it.
+When a URL comes in, the service first checks if it's been seen before. If it has, it returns the existing code, because there's no point minting a second one for the same destination. If it's new, it generates a cryptographically random 64-bit number, Base62-encodes it, and saves it.
 
-Base62 is worth explaining because it's the quiet workhorse behind all three approaches. It uses 62 symbols — digits, uppercase letters, lowercase letters — to turn integers into strings. The number 1 becomes `"1"`. Number 10 becomes `"A"`. Number 62 becomes `"10"`. It's compact, URL-safe (unlike Base64 with its `+` and `/` characters), and human-readable enough that you can type a short code without squinting.
+Quick aside on Base62, since it shows up in all three approaches. It's just 62 symbols (digits, uppercase letters, lowercase letters) used to write numbers as strings. The number 1 becomes `"1"`, 10 becomes `"A"`, 62 becomes `"10"`. It's compact, URL-safe (Base64's `+` and `/` are a pain in URLs), and readable enough that you can actually type a short code without squinting.
 
-The elegance of the random approach is in what it *doesn't* do. No central counter. No coordination between servers. No clock synchronization. Nine quintillion possible values means the birthday paradox doesn't become a practical concern until you're storing billions of entries — and even then, the collision check catches it and retries with a tiny salt.
+What I like about the random approach is everything it doesn't do. No central counter. No coordination between servers. No clock synchronization. With nine quintillion possible values, the birthday paradox doesn't become a real problem until you're storing billions of links, and even then the collision check just catches it and retries with a tiny salt.
 
-**What you gain:** Simplicity, statelessness, and unpredictability. An attacker cannot enumerate your links by guessing codes. They reveal nothing about your volume, your ordering, or your internals.
+**What you get:** simplicity, statelessness, and unpredictability. Nobody can enumerate your links by guessing codes. The codes leak nothing about your volume, your ordering, or your internals.
 
-**What you give up:** Compactness and ordering. A random 64-bit integer encodes to roughly 11 Base62 characters. And you lose any sense of sequence — you can't look at two short codes and know which URL was created first.
+**What it costs you:** compactness and ordering. A random 64-bit number encodes to about 11 Base62 characters. And there's no sequence to speak of. Given two codes, you can't tell which link was created first.
 
-For a public URL shortener where privacy matters, this is often the right call.
+If you're building a public shortener and privacy matters, this is probably your answer.
 
 ---
 
 ## Approach 2 — Let the Database Count
 
-If you're willing to centralize, the database can do the heavy lifting.
+If you're okay centralizing, the database will happily do the work.
 
-Instead of generating an ID yourself, you ask PostgreSQL: "What's the next number?" The database has a built-in mechanism for this — a sequence — that atomically returns a monotonically increasing integer every time you ask. No two callers get the same number, no matter how many requests arrive concurrently.
+Instead of making an ID yourself, you ask PostgreSQL for the next number. Sequences are built for exactly this: they hand out atomically increasing integers, and no two callers ever get the same one, no matter how many requests hit at the same time.
 
-Once you have that integer — say, 42 — you encode it to Base62 and store everything in one row. The short code for 42: `"G"`. Two characters once you hit 62. Three once you pass 3,843. The codes stay remarkably short because you're counting from the beginning.
+Say you get 42 back. You Base62-encode it (`"G"`) and store everything in one row. Because you're counting from the start, codes stay impressively short. Two characters once you pass 62 links. Three once you pass 3,843.
 
-There's a subtlety here worth mentioning because it bit us in production. When you save an entity that already has an ID (and ours does — we got it from the sequence), Spring Data JDBC assumes the row exists and tries to update it. It doesn't. The fix is a one-line interface that tells the framework: "Trust me, insert this." It's the kind of detail that separates a working prototype from something you'd deploy. If you're curious about the implementation, it's in the repository — look for `Persistable` and the factory method on `UrlEntity`.
+One gotcha that cost me a couple of hours while building this: when you save an entity that already has an ID (this one does, since it came from the sequence), Spring Data JDBC assumes the row already exists and issues an update. It doesn't exist, so nothing gets written and you get no error telling you why. The fix is a one-line interface that tells the framework "trust me, this is an insert." It's a small detail, but it's the kind of thing that separates a demo from something you'd actually ship. If you want the specifics, look for `Persistable` and the factory method on `UrlEntity` in the repo.
 
-**What you gain:** Guaranteed uniqueness from the database itself. The shortest possible codes at low volumes — single characters for the first 62 links. Simple and predictable.
+**What you get:** uniqueness guaranteed by the database itself, the shortest codes possible at low volume (single characters for your first 62 links), and a design that's easy to reason about.
 
-**What you give up:** Horizontal scalability and privacy. All writes funnel through a single sequence. At a few thousand requests per second, this is fine. At a million, it's not. And the predictability is a double-edged sword — an attacker who understands the pattern can walk through every link in your system by incrementing the short code.
+**What it costs you:** scale and privacy. Every write funnels through one sequence. That's fine at a few thousand requests per second and not fine at a million. And the predictability cuts both ways: anyone who figures out the pattern can walk through every link in your system just by incrementing the code.
 
-For an internal tool with modest volume, this is usually the right call.
+For an internal tool with modest traffic, this is probably your answer.
 
 ---
 
 ## Approach 3 — Pack Time, Identity, and Order into a Single Number
 
-What if every server could generate globally unique IDs independently, never talking to a central counter, never coordinating with other servers — and still guarantee no collisions?
+What if every server could mint globally unique IDs on its own, with no central counter and no coordination, and still never collide?
 
-That's the insight behind Twitter's Snowflake algorithm, which we adapted into a simplified version for our shortener. The idea is to use the 64 bits of a long integer as a container for three pieces of information:
+That's the idea behind Twitter's Snowflake algorithm, which I adapted into a simplified version for this project. You treat the 64 bits of a long integer as a container holding three facts:
 
 ```mermaid
 block-beta
@@ -120,27 +117,23 @@ block-beta
         c1["0–4095 per ms
         ~4M IDs/sec per server"]
     end
-
-    style ts fill:#1557d6,color:#fff
-    style sh fill:#f26a3d,color:#fff
-    style sq fill:#2e8b5a,color:#fff
 ```
 
-**The timestamp** (42 bits) captures milliseconds since January 1, 2025. Every ID embeds when it was born, and we have about 139 years before we run out of bits.
+**The timestamp** (42 bits) holds milliseconds since January 1, 2025. Every ID remembers when it was born, and there's roughly 139 years before the bits run out.
 
-**The shard ID** (10 bits) identifies which server created the ID. In our setup, each Kubernetes pod derives its shard ID automatically from its hostname — a quick hash, modulo 1024. No manual config. No service discovery. In local development, you can set it explicitly with an environment variable.
+**The shard ID** (10 bits) says which server made the ID. In this setup, each Kubernetes pod derives its shard ID from its hostname: a quick hash, modulo 1024. No manual config, no service discovery. For local development you can just set an environment variable.
 
-**The sequence number** (12 bits) counts IDs within a single millisecond on a single server. If a server somehow pumps out more than 4,096 IDs in the same millisecond, it waits for the clock to tick forward. In practice, that ceiling is about 4 million IDs per second per server — far beyond what any URL shortener would ever need.
+**The sequence number** (12 bits) counts IDs created within the same millisecond on the same server. If a server somehow produces more than 4,096 IDs in one millisecond, it waits for the clock to tick forward. That ceiling works out to about 4 million IDs per second per server, which is far more than any URL shortener will ever need.
 
-Put these three components together at their respective bit positions, and you get a 64-bit integer that is guaranteed to be globally unique across your entire fleet. Two servers at the same millisecond? Different shard IDs. Same server at the same millisecond? Different sequence numbers. The only thing that can break it is the system clock ticking backward — and we detect that and refuse to generate rather than risk a collision.
+Combine the three at their bit positions and you get a 64-bit integer that's globally unique across the whole fleet. Two servers in the same millisecond? Different shard IDs. Same server, same millisecond? Different sequence numbers. The one thing that can break it is the system clock jumping backwards, so the generator detects that and refuses to produce an ID rather than risk a collision.
 
-From there it's the same Base62 encode → save path as the other approaches. Except the ID came from local memory, not a database round-trip.
+After that, it's the same Base62-encode-and-save path as the other approaches. The only difference is the ID came from local memory instead of a database round-trip.
 
-**What you gain:** Zero coordination. Truly horizontal scale — 1,024 servers, 4 million IDs per second each, zero cross-talk. Rough chronological ordering from the embedded timestamp.
+**What you get:** zero coordination and real horizontal scale. 1,024 servers, 4 million IDs per second each, nobody talking to anybody. Plus rough chronological ordering baked in for free, thanks to the embedded timestamp.
 
-**What you give up:** Code length. A full 64-bit ID encodes to about 11 Base62 characters — not as compact as the increment approach at low volume. And the implementation involves bit manipulation, sequence overflow handling, and clock drift monitoring. It's more complex.
+**What it costs you:** code length and complexity. A full 64-bit ID encodes to about 11 Base62 characters, so it's no more compact than the random approach. And there's real implementation work here: bit manipulation, sequence overflow handling, clock drift monitoring.
 
-For a high-throughput platform deployed across multiple regions, this is usually the right call.
+For a high-throughput platform spread across regions, this is probably your answer.
 
 ---
 
@@ -160,19 +153,19 @@ For a high-throughput platform deployed across multiple regions, this is usually
 
 ## Performance Reality Check
 
-All three approaches were profiled under the same conditions. The redirect path — the one every user hits — is a single indexed database lookup and returns in under 3 milliseconds regardless of which approach generated the ID. The write path is slightly faster for Snowflake (~3,100/sec vs ~2,700/sec) because it skips the database round-trip for ID generation.
+I profiled all three under the same conditions. The redirect path, the one every user actually hits, is a single indexed lookup and comes back in under 3 milliseconds no matter which approach generated the ID. Writes are a touch faster with Snowflake (~3,100/sec vs ~2,700/sec) because it skips the database round-trip for ID generation.
 
-But honestly, at these scales, the bottleneck isn't the ID generation at all. It's the database INSERT and its write-ahead log. All three approaches will saturate your database write capacity long before their algorithms break. The differences are architectural — coordination, predictability, operational footprint — not raw throughput.
+Honestly though, at these volumes the ID generation isn't the bottleneck at all. It's the database INSERT and its write-ahead log. All three approaches will max out your database write capacity long before the algorithms themselves break. The real differences are architectural: coordination, predictability, operational footprint. Not raw speed.
 
 ---
 
 ## So Which One?
 
-**Internal tool with modest volume → Unified Increment.** You get the shortest codes, the simplest codebase, and the database sequence won't be your bottleneck at a few thousand inserts per day. Single-character codes are genuinely delightful.
+**Internal tool with modest volume → Unified Increment.** You get the shortest codes, the simplest codebase, and the sequence won't break a sweat at a few thousand inserts a day. Single-character short codes are also just really satisfying.
 
-**Public URL shortener → Random Hash.** If strangers are creating links that might point to private documents, you need unpredictability. The increment approach leaks information about your volume and lets anyone walk through your entire link graph.
+**Public URL shortener → Random Hash.** If strangers are creating links that might point to private documents, you need codes nobody can guess. The increment approach advertises your volume and lets anyone crawl your entire link graph.
 
-**High-throughput, multi-region platform → Distributed Snowflake.** When you're deploying across continents and serving millions of requests per minute, you need coordination-free ID generation. The added complexity of bit manipulation and clock monitoring pays for itself the first time you deploy to a second region and everything just works — no shared counter, no distributed lock, no surprises.
+**High-throughput, multi-region platform → Distributed Snowflake.** Once you're deploying across continents and serving millions of requests per minute, coordination-free ID generation stops being a luxury. The bit-twiddling and clock monitoring pay for themselves the first time you spin up a second region and everything just works. No shared counter, no distributed lock, no surprises.
 
 ```mermaid
 flowchart TD
@@ -182,27 +175,23 @@ flowchart TD
     shortener?"}
     Q1 -->|"Over 10K"| Q3{"Multi-region
     deployment?"}
-    Q2 -->|"Yes"| A1["✨ Random Hash
-    — Unpredictable codes"]
-    Q2 -->|"No (internal tool)"| A2["✨ Unified Increment
-    — Short, simple, delightful"]
-    Q3 -->|"Yes"| A3["✨ Distributed Snowflake
-    — Scale without coordination"]
+    Q2 -->|"Yes"| A1["Random Hash
+    Unpredictable codes"]
+    Q2 -->|"No (internal tool)"| A2["Unified Increment
+    Short, simple, delightful"]
+    Q3 -->|"Yes"| A3["Distributed Snowflake
+    Scale without coordination"]
     Q3 -->|"No"| Q4{"Privacy
     matters?"}
     Q4 -->|"Yes"| A1
     Q4 -->|"No"| A2
-
-    style A1 fill:#1557d6,color:#fff
-    style A2 fill:#f26a3d,color:#fff
-    style A3 fill:#2e8b5a,color:#fff
 ```
 
 ---
 
 ## Explore the Code
 
-All three approaches live in one repository, each on its own branch. Switch, run, compare:
+All three approaches live in one repository, one per branch. Switch, run, compare:
 
 ```bash
 git checkout main                           # Random Hash
@@ -213,7 +202,7 @@ docker compose up -d
 ./gradlew bootRun        # → http://localhost:8080
 ```
 
-Each branch carries 38 to 44 tests covering uniqueness, concurrency, edge cases, and the full HTTP cycle. No flaky tests, no skipped assertions — every approach stands on its own.
+Each branch carries 38 to 44 tests covering uniqueness, concurrency, edge cases, and the full HTTP cycle. No flaky tests, no skipped assertions. Every approach has to stand on its own.
 
 ---
 
